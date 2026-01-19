@@ -1,0 +1,12 @@
+[
+  {"tstamp": "2024-10-13T13:00:00.000Z", "download": 26250000, "upload": 3637500.0, "mainPing": 24},
+  {"tstamp": "2024-10-13T13:00:15.000Z", "download": 25625000, "upload": 3475000.0, "mainPing": 26},
+  {"tstamp": "2024-10-13T13:00:30.000Z", "download": 24750000, "upload": 3575000.0, "mainPing": 28},
+  {"tstamp": "2024-10-13T13:00:45.000Z", "download": 24375000, "upload": 3750000.0, "mainPing": 31},
+  {"tstamp": "2024-10-13T13:01:00.000Z", "download": 25250000, "upload": 3362500.0, "mainPing": 29},
+  {"tstamp": "2024-10-13T13:01:15.000Z", "download": 23500000, "upload": 3525000.0, "mainPing": 33},
+  {"tstamp": "2024-10-13T13:01:30.000Z", "download": 25000000, "upload": 3675000.0, "mainPing": 27},
+  {"tstamp": "2024-10-13T13:01:45.000Z", "download": 24000000, "upload": 3450000.0, "mainPing": 30},
+  {"tstamp": "2024-10-13T13:02:00.000Z", "download": 23125000, "upload": 3612500.0, "mainPing": 35},
+  {"tstamp": "2024-10-13T13:02:15.000Z", "download": 24500000, "upload": 3725000.0, "mainPing": 32}
+]
