@@ -1,5 +1,7 @@
 # SwiftShift: Accelerating QUIC Migration for Ultra-Low-Latency Interactive Media
 
+> Demo: Screen recording for stall test in `demo`
+
 > Research artifact for **SwiftShift**, a QUIC migration optimization framework designed for **ultra-low-latency (ULL) interactive media** (video conferencing, cloud gaming, XR/VR), where even sub-second delivery gaps can cause visible freezes.
 
 **SwiftShift** targets the two dominant sources of migration micro-stalls:
@@ -65,11 +67,11 @@ MAPR is invoked when the peer’s new address tuple is observed:
 
 > Adjust paths/names below to match your actual repository structure.
 
-- `test_client.c` / `test_server.c`  
-  Minimal client/server programs used for migration experiments.
-- `ffmpeg_server.sh`  
-  Example pipeline that feeds MPEG-TS into the QUIC server.
-- `ffmpeg_test_vmaf.sh` (optional)  
+- xquic/tests/ `live_client.c` ,   `live_server.c`  
+  Minimal client/server(-D for NBV, -2 for MAPR) programs used for migration experiments.
+- xquic/migration_test/ `run_live_server.sh` / `run_live_client.sh`
+  Example pipeline that feeds MPEG-TS into the QUIC server; and example pipeline for client
+-  `xquic/migration_test/analyse_decode_ts.py` (optional)  
   Helper for post-processing / quality analysis workflows.
 
 ---
@@ -77,11 +79,10 @@ MAPR is invoked when the peer’s new address tuple is observed:
 ## Usage
 
 > **You said you’ll fill this section in.**  
-> Suggested structure:
-> - Build / dependencies
-> - Quick start (server, client)
-> - Network emulation / migration trigger
-> - How to reproduce each figure/table from the paper
+> - Build: xquic_build.sh
+> - Quick start (run_live_server.sh, run_live_client.sh)
+> - Network emulation / migration trigger: python3 analyze_decode_ts.py decode_ts
+
 
 ---
 
