@@ -77,9 +77,10 @@ MAPR is invoked when the peer’s new address tuple is observed:
 ---
 
 ## Usage
-
-> **You said you’ll fill this section in.**  
-> - Build: xquic_build.sh
+ 
+> - Build:1. run xquic_build.sh;<br> 
+          2. add a test.mp4 for xquic/migration_test;<br>
+          3. config ip and iface for client/server(e.g. iface: enp6s20 server:192.168.68.125 and client: 192.168.68.126/127)
 > - Quick start (run_live_server.sh, run_live_client.sh)
 > - Network emulation / migration trigger: python3 analyze_decode_ts.py decode_ts
 

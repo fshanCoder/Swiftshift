@@ -1,5 +1,19 @@
 #!/bin/bash
-sudo apt-get install -y build-essential libevent-dev
+
+# Dependencies for building and running xquic clients/servers (Linux)
+# - Build toolchain: gcc/g++, make, cmake, git, pkg-config
+# - Libraries: libevent-dev (required by tests/tools)
+# - TLS tools: openssl (generate test certs), ca-certificates
+# - Networking tools: iproute2 (ip/tc), procps (ps/pgrep), sudo
+# - Runtime utilities: ffmpeg (pipe media), python3 (log timestamping)
+#
+# Install prerequisites upfront
+sudo apt-get update -y
+sudo apt-get install -y \
+    build-essential cmake git pkg-config \
+    libevent-dev openssl ca-certificates \
+    iproute2 procps sudo \
+    ffmpeg python3
 
 cd xquic;
 # cd quic-base                                                                                                    
