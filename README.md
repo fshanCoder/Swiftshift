@@ -1,110 +1,72 @@
 # SwiftShift: Accelerating QUIC Migration for Ultra-Low-Latency Interactive Media
 
-> Demo: Screen recording for stall test in `demo`
+Research artifact for **SwiftShift**, a QUIC migration optimization framework for **ultra-low-latency (ULL) interactive media** (video conferencing, cloud gaming, XR/VR). It targets migration micro-stalls caused by **blocking path validation** and **timeout-amplified loss recovery** during access-network transitions.
 
-> Research artifact for **SwiftShift**, a QUIC migration optimization framework designed for **ultra-low-latency (ULL) interactive media** (video conferencing, cloud gaming, XR/VR), where even sub-second delivery gaps can cause visible freezes.
+## Paper
 
-**SwiftShift** targets the two dominant sources of migration micro-stalls:
-- **RTT-bound blocking path validation**
-- **PTO / timeout-amplified loss recovery** around access-network transitions (e.g., Wi-Fi ↔ cellular, NAT rebinding)
+- **Venue**: NOSSDAV '26 (Hong Kong, Apr 4-8, 2026)
+- **Authors**: Fangshuo Han, Dongbiao He, Xian Yu, Heng Pan, Xiaohui Nie, Yanbiao Li
+- **DOI**: https://doi.org/10.1145/3798065.3798080
 
----
+## Key Ideas
 
-## TL;DR
+- **Adaptive migration triggering**: OS event-driven detection (e.g., Linux netlink) with filtering to reduce false positives and trigger within milliseconds.
+- **NBV (Non-Blocking Validation)**: Overlaps path validation with strictly bounded speculative sending on a tentative path under anti-amplification constraints.
+- **MAPR (Migration-Aware Proactive Retransmission)**: Proactively repairs likely-lost in-flight packets after a switch and resets loss-detection timers.
 
-SwiftShift integrates two complementary mechanisms:
+## Repository Layout
 
-- **NBV (Non-Blocking Validation)**  
-  Overlaps QUIC path validation with *strictly bounded* speculative transmission on a tentative path, eliminating the classic “wait one RTT” blackout—while preserving anti-amplification safety goals.
+- xquic/tests/ `live_client.c`, `live_server.c`  \
+  Minimal client/server programs for migration experiments.
+- xquic/migration_test/ `run_live_server.sh`, `run_live_client.sh`  \
+  Example end-to-end pipeline for live streaming tests.
+- xquic/migration_test/analyse_decode_ts.py  \
+  Optional post-processing and quality analysis.
+- demo/  \
+  Screen recording for stall tests.
 
-- **MAPR (Migration-Aware Proactive Retransmission)**  
-  Immediately repairs likely-lost **in-flight** packets after a path change and resets loss-detection timers to avoid waiting for stale pre-migration PTO baselines.
+## Build
 
-In our end-to-end ULL streaming evaluation, SwiftShift:
-- reduces **migration-induced stall time** by ~**61%**
-- reduces **retransmission overhead** by ~**51%**
-- maintains **jitter-buffer stability** under a tight **100 ms** playout-delay budget (no network-side changes required)
+1. Run `xquic_build.sh`.
+2. Place a `test.mp4` under `xquic/migration_test/`.
+3. Configure IP and interface for client/server (example):
+   - iface: `enp6s20`
+   - server: `192.168.68.125`
+   - client: `192.168.68.126/127`
 
+## Run (Quick Start)
 
-## Why this matters
+- `xquic/migration_test/run_live_server.sh`
+- `xquic/migration_test/run_live_client.sh`
 
-ULL interactive media is unusually sensitive to brief delivery gaps:
-- A “small” 200–300 ms transport stall can translate into **frame deadline misses**, **decoder starvation**, and **user-visible freezes**.
-- Heterogeneous access networks (Wi-Fi/5G/satellite) make **path changes a routine event** rather than an exception.
+## Key Implementation Files (src/)
 
-SwiftShift treats migration not as a rare corner case, but as a **first-order impairment** for ULL continuity.
+- [xquic/src/transport/xqc_engine.c](xquic/src/transport/xqc_engine.c): migration trigger integration, NBV/MAPR execution path, and security bounds.
+- [xquic/src/transport/xqc_frame.c](xquic/src/transport/xqc_frame.c): PATH_CHALLENGE/PATH_RESPONSE handling and validation flow.
+- [xquic/src/transport/xqc_send_ctl.c](xquic/src/transport/xqc_send_ctl.c): anti-amplification checks and loss-detection timer control.
+- [xquic/src/transport/xqc_multipath.c](xquic/src/transport/xqc_multipath.c): path state transitions and validation state tracking.
 
----
+## Evaluation Outline
 
-## Design at a glance
+Recommended reporting metrics for migration performance:
+- **Stall time per migration** (excess inter-frame gap)
+- **Retransmitted packets per migration** (within a fixed post-switch window)
+- **Receiver jitter-buffer slack** (e.g., 100 ms target)
 
-### 1) NBV: bounded speculation during validation
-Standard QUIC migration typically blocks full use of a new path until it receives `PATH_RESPONSE`.  
-NBV instead:
-- marks the new path as **Tentative**
-- runs validation in the background
-- allows immediate sending on the tentative path within a conservative envelope  
-  (charged to anti-amplification accounting; capped by a configurable upper bound)
+Network dynamics can be emulated with `tc netem`, including a short blackout during the switch. For workload profiles, consider video call (30 FPS), cloud gaming (60 FPS), and XR/VR (90 FPS) with tight playout budgets.
 
-If validation fails or times out, NBV **rolls back** cleanly by abandoning the tentative path and retransmitting on the last confirmed path.
+## Citation
 
-### 2) MAPR: proactive repair after a switch
-MAPR is invoked when the peer’s new address tuple is observed:
-1. scan send buffer for **unacknowledged in-flight** packets
-2. **immediately retransmit** them on the new path (still respecting the same envelope before confirmation)
-3. reset/re-arm the **loss-detection timer** so post-migration recovery reflects the new path’s RTT
+```bibtex
+@inproceedings{han2026swiftshift,
+  title={SwiftShift: Accelerating QUIC Migration for Ultra-Low-Latency Interactive Media},
+  author={Han, Fangshuo and He, Dongbiao and Yu, Xian and Pan, Heng and Nie, Xiaohui and Li, Yanbiao},
+  booktitle={Workshop on Network and Operating System Support for Digital Audio and Video (NOSSDAV '26)},
+  year={2026},
+  doi={10.1145/3798065.3798080}
+}
+```
 
----
+## License
 
-## Implementation notes
-
-- Implemented on **XQUIC** (wire-compatible; no network-side changes).
-- Works for **client-initiated path changes** (common for mobile endpoints).
-
----
-
-## What’s in this repo (suggested layout)
-
-> Adjust paths/names below to match your actual repository structure.
-
-- xquic/tests/ `live_client.c` ,   `live_server.c`  
-  Minimal client/server(-D for NBV, -2 for MAPR) programs used for migration experiments.
-- xquic/migration_test/ `run_live_server.sh` / `run_live_client.sh`
-  Example pipeline that feeds MPEG-TS into the QUIC server; and example pipeline for client
--  `xquic/migration_test/analyse_decode_ts.py` (optional)  
-  Helper for post-processing / quality analysis workflows.
-
----
-
-## Usage
- 
-> - Build:1. run xquic_build.sh;<br> 
-          2. add a test.mp4 for xquic/migration_test;<br>
-          3. config ip and iface for client/server(e.g. iface: enp6s20 server:192.168.68.125 and client: 192.168.68.126/127)
-> - Quick start (run_live_server.sh, run_live_client.sh)
-> - Network emulation / migration trigger: python3 analyze_decode_ts.py decode_ts
-
-
----
-
-## Reproducing the paper’s evaluation (outline)
-
-If you want readers to reproduce results smoothly, consider documenting:
-
-- **Workload profiles (ULL primitives)**
-  - video call: 30 FPS, stable pacing, small VBV
-  - cloud gaming: 60 FPS, burstier frames, scenecut-enabled keyframes
-  - XR/VR: 90 FPS, tighter delivery slack
-
-- **Network dynamics**
-  - delay/loss via `tc netem`
-  - short blackout around the switch
-  - controlled pre-/post-switch conditions (optional) for attribution
-
-- **Metrics**
-  - per-migration stall time (excess inter-frame gap)
-  - retransmitted packets per migration
-  - receiver jitter-buffer slack (e.g., 100 ms target delay)
-
----
-
+See `xquic/LICENSE` for licensing details.

@@ -13,6 +13,15 @@
 #include "src/common/xqc_list.h"
 
 #define XQC_RESET_CNT_ARRAY_LEN 16384
+#define XQC_MIGR_BUCKET_TABLE_SIZE 256
+
+typedef struct {
+    uint8_t     key[16];
+    uint8_t     key_len;
+    uint8_t     in_use;
+    uint32_t    tokens;
+    xqc_usec_t  last_ts;
+} xqc_migr_bucket_t;
 
 
 typedef enum {
@@ -80,6 +89,9 @@ typedef struct xqc_engine_s {
     char                            peer_addr_str[INET6_ADDRSTRLEN];
 
     void                           *priv_ctx;
+
+    xqc_migr_bucket_t               migr_buckets[XQC_MIGR_BUCKET_TABLE_SIZE];
+    uint32_t                        migr_tentative_active;
 
 } xqc_engine_t;
 

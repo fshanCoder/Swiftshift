@@ -506,6 +506,14 @@ struct xqc_connection_s {
     uint32_t                        conn_video_frames;
 
     xqc_packet_number_t last_old_pkynum; // : debug
+
+    /* migration security accounting */
+    xqc_usec_t                      migr_window_start;
+    uint32_t                        migr_window_count;
+    xqc_usec_t                      migr_spec_disable_until;
+    uint8_t                         migr_tentative_active;
+    uint64_t                        migr_tentative_path_id;
+    xqc_usec_t                      migr_tentative_deadline;
 };
 
 extern const xqc_h3_conn_settings_t default_local_h3_conn_settings;

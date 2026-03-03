@@ -3,13 +3,17 @@ set -euo pipefail
 shopt -s lastpipe
 CLEANED=0
 
+
+IFACE=${IFACE:-enp6s20}       #set your NIC
+ADDR=${ADDR:-192.168.68.125}  #set your server IP to connect to
+
 # Resolve repo root from build/tests
 ROOT_DIR=$(cd "$(dirname "$0")"/../.. && pwd)
 SWITCHER="$ROOT_DIR/migration_test/ip_change.sh"
 SWITCH_LOG="$(pwd)/migration_switch.log"
 SWITCH_PIDFILE="$(pwd)/switcher.pid"
-IFACE=${IFACE:-enp6s20}
-ADDR=${ADDR:-192.168.68.125}
+
+
 
 stop_switcher_force() {
   # Try to stop a running switcher using pidfile or process match

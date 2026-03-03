@@ -30,6 +30,13 @@
  
  
  extern const xqc_qpack_ins_cb_t xqc_h3_qpack_ins_cb;
+
+#define XQC_MIGR_SPEC_FLIGHT_MAX        (64 * 1024)
+#define XQC_MIGR_HANDOVER_MAX           4
+#define XQC_MIGR_HANDOVER_WIN_US        (30 * 1000 * 1000)
+#define XQC_MIGR_BUCKET_CAP             8
+#define XQC_MIGR_BUCKET_REFILL_PER_SEC  4
+#define XQC_MIGR_GLOBAL_TENTATIVE_MAX   256
  
  xqc_config_t default_client_config = {
      .cfg_log_level             = XQC_LOG_WARN,
@@ -81,6 +88,217 @@
  
  void
  xqc_engine_free_alpn_list(xqc_engine_t *engine);
+
+static xqc_bool_t
+xqc_engine_migr_prefix_key(const struct sockaddr *peer_addr, uint8_t *key, uint8_t *key_len)
+{
+    if (peer_addr == NULL || key == NULL || key_len == NULL) {
+        return XQC_FALSE;
+    }
+
+    if (peer_addr->sa_family == AF_INET) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)peer_addr;
+        xqc_memcpy(key, &sin->sin_addr, sizeof(sin->sin_addr));
+        key[3] = 0; /* /24 */
+        *key_len = 4;
+        return XQC_TRUE;
+    }
+
+    if (peer_addr->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)peer_addr;
+        xqc_memcpy(key, &sin6->sin6_addr, sizeof(sin6->sin6_addr));
+        xqc_memzero(key + 8, 8); /* /64 */
+        *key_len = 16;
+        return XQC_TRUE;
+    }
+
+    return XQC_FALSE;
+}
+
+static xqc_migr_bucket_t *
+xqc_engine_migr_bucket_get(xqc_engine_t *engine, const uint8_t *key, uint8_t key_len, xqc_usec_t now)
+{
+    xqc_migr_bucket_t *empty = NULL;
+    xqc_migr_bucket_t *oldest = NULL;
+
+    for (uint32_t i = 0; i < XQC_MIGR_BUCKET_TABLE_SIZE; ++i) {
+        xqc_migr_bucket_t *b = &engine->migr_buckets[i];
+        if (b->in_use) {
+            if (b->key_len == key_len && xqc_memcmp(b->key, key, key_len) == 0) {
+                return b;
+            }
+            if (oldest == NULL || b->last_ts < oldest->last_ts) {
+                oldest = b;
+            }
+        } else if (empty == NULL) {
+            empty = b;
+        }
+    }
+
+    xqc_migr_bucket_t *b = empty ? empty : oldest;
+    if (b) {
+        xqc_memzero(b, sizeof(*b));
+        xqc_memcpy(b->key, key, key_len);
+        b->key_len = key_len;
+        b->in_use = 1;
+        b->tokens = XQC_MIGR_BUCKET_CAP;
+        b->last_ts = now;
+    }
+
+    return b;
+}
+
+static xqc_bool_t
+xqc_engine_migr_bucket_try_take(xqc_engine_t *engine, const struct sockaddr *peer_addr, xqc_usec_t now)
+{
+    uint8_t key[16];
+    uint8_t key_len = 0;
+    if (!xqc_engine_migr_prefix_key(peer_addr, key, &key_len)) {
+        return XQC_FALSE;
+    }
+
+    xqc_migr_bucket_t *bucket = xqc_engine_migr_bucket_get(engine, key, key_len, now);
+    if (bucket == NULL) {
+        return XQC_FALSE;
+    }
+
+    if (now > bucket->last_ts) {
+        uint64_t delta = now - bucket->last_ts;
+        uint64_t add = (delta * XQC_MIGR_BUCKET_REFILL_PER_SEC) / 1000000;
+        if (add > 0) {
+            bucket->tokens = (uint32_t)xqc_min((uint64_t)XQC_MIGR_BUCKET_CAP, (uint64_t)bucket->tokens + add);
+            bucket->last_ts = now;
+        }
+    }
+
+    if (bucket->tokens == 0) {
+        return XQC_FALSE;
+    }
+
+    bucket->tokens--;
+    return XQC_TRUE;
+}
+
+static xqc_bool_t
+xqc_engine_migr_has_pending_rebinding(xqc_connection_t *conn)
+{
+    xqc_list_head_t *p, *n;
+    xqc_path_ctx_t *path;
+    xqc_list_for_each_safe(p, n, &conn->conn_paths_list) {
+        path = xqc_list_entry(p, xqc_path_ctx_t, path_list);
+        if (path->rebinding_addrlen != 0) {
+            return XQC_TRUE;
+        }
+    }
+    return XQC_FALSE;
+}
+
+static void
+xqc_engine_migr_clear_rebinding(xqc_connection_t *conn)
+{
+    xqc_list_head_t *p, *n;
+    xqc_path_ctx_t *path;
+    xqc_list_for_each_safe(p, n, &conn->conn_paths_list) {
+        path = xqc_list_entry(p, xqc_path_ctx_t, path_list);
+        if (path->rebinding_addrlen != 0) {
+            path->rebinding_addrlen = 0;
+            path->rebinding_check_response = 0;
+            if (path->path_send_ctl) {
+                xqc_timer_unset(&path->path_send_ctl->path_timer_manager, XQC_TIMER_NAT_REBINDING);
+            }
+        }
+    }
+}
+
+static void
+xqc_engine_migr_cancel_tentative(xqc_engine_t *engine, xqc_connection_t *conn, const char *reason)
+{
+    if (!conn->migr_tentative_active) {
+        return;
+    }
+
+    if (engine->migr_tentative_active > 0) {
+        engine->migr_tentative_active--;
+    }
+    conn->migr_tentative_active = 0;
+    conn->migr_tentative_path_id = 0;
+    conn->migr_tentative_deadline = 0;
+    xqc_engine_migr_clear_rebinding(conn);
+
+    xqc_log(conn->log, XQC_LOG_DEBUG, "|migr|cancel tentative|reason:%s|", reason ? reason : "-");
+}
+
+static void
+xqc_engine_migr_reclaim_tentative(xqc_engine_t *engine, xqc_connection_t *conn, xqc_usec_t now)
+{
+    if (!conn->migr_tentative_active) {
+        return;
+    }
+
+    if ((conn->migr_tentative_deadline != 0 && now > conn->migr_tentative_deadline)
+        || !xqc_engine_migr_has_pending_rebinding(conn))
+    {
+        xqc_engine_migr_cancel_tentative(engine, conn, "reclaim");
+    }
+}
+
+static size_t
+xqc_engine_migr_calc_spec_budget(xqc_connection_t *conn, xqc_path_ctx_t *path)
+{
+    if (path == NULL || path->path_send_ctl == NULL) {
+        return 0;
+    }
+
+    uint64_t rate = xqc_send_ctl_get_pacing_rate(path->path_send_ctl);
+    xqc_usec_t pto = xqc_conn_get_max_pto(conn);
+    if (rate == 0 || pto == 0) {
+        return 0;
+    }
+
+    uint64_t budget = (rate * 3 * pto) / 1000000;
+    budget = xqc_min(budget, (uint64_t)XQC_MIGR_SPEC_FLIGHT_MAX);
+    return (size_t)budget;
+}
+
+static xqc_bool_t
+xqc_engine_migr_allow_speculative(xqc_engine_t *engine, xqc_connection_t *conn,
+    xqc_path_ctx_t *path, const struct sockaddr *peer_addr, xqc_usec_t now, size_t *spec_budget)
+{
+    if (!(conn->conn_flag & XQC_CONN_FLAG_CAN_SEND_1RTT)) {
+        return XQC_FALSE;
+    }
+
+    if (conn->migr_spec_disable_until != 0 && now < conn->migr_spec_disable_until) {
+        return XQC_FALSE;
+    }
+
+    if (conn->migr_window_start == 0
+        || now - conn->migr_window_start > XQC_MIGR_HANDOVER_WIN_US)
+    {
+        conn->migr_window_start = now;
+        conn->migr_window_count = 0;
+    }
+    conn->migr_window_count++;
+    if (conn->migr_window_count > XQC_MIGR_HANDOVER_MAX) {
+        conn->migr_spec_disable_until = now + XQC_MIGR_HANDOVER_WIN_US;
+        return XQC_FALSE;
+    }
+
+    if (engine->migr_tentative_active >= XQC_MIGR_GLOBAL_TENTATIVE_MAX) {
+        return XQC_FALSE;
+    }
+
+    *spec_budget = xqc_engine_migr_calc_spec_budget(conn, path);
+    if (*spec_budget == 0) {
+        return XQC_FALSE;
+    }
+
+    if (!xqc_engine_migr_bucket_try_take(engine, peer_addr, now)) {
+        return XQC_FALSE;
+    }
+
+    return XQC_TRUE;
+}
  
  
  xqc_int_t
@@ -1096,9 +1314,13 @@
      return ret;
  }
 
-void xqc_conn_server_resend_immediately(xqc_connection_t *conn)
+void xqc_conn_server_resend_immediately(xqc_connection_t *conn, size_t spec_budget)
 {
     if (conn == NULL || conn->conn_send_queue == NULL) {
+        return;
+    }
+
+    if (spec_budget == 0) {
         return;
     }
 
@@ -1108,6 +1330,7 @@ void xqc_conn_server_resend_immediately(xqc_connection_t *conn)
     xqc_list_head_t *pos, *next;
     xqc_packet_out_t *po;
     int copied = 0;
+    size_t copied_bytes = 0;
 
     xqc_list_for_each_safe(pos, next, unacked_head) {
         po = xqc_list_entry(pos, xqc_packet_out_t, po_list);
@@ -1117,8 +1340,13 @@ void xqc_conn_server_resend_immediately(xqc_connection_t *conn)
             continue;
         }
 
+        if (copied_bytes + po->po_used_size > spec_budget) {
+            break;
+        }
+
         xqc_send_queue_copy_to_lost(po, send_queue, XQC_TRUE);
         copied++;
+        copied_bytes += po->po_used_size;
     }
 
     if (copied == 0) {
@@ -1249,6 +1477,8 @@ void xqc_conn_server_resend_immediately(xqc_connection_t *conn)
          }
          xqc_log_event(conn->log, CON_CONNECTION_STARTED, conn, XQC_LOG_LOCAL_EVENT);
      }
+
+    xqc_engine_migr_reclaim_tentative(engine, conn, recv_time);
  
     /* NAT rebinding: handle on both server and client
      * When receiving from a new peer address (same CID), validate via PATH_CHALLENGE. */
@@ -1257,7 +1487,33 @@ void xqc_conn_server_resend_immediately(xqc_connection_t *conn)
          && !xqc_is_same_addr_as_any_path(conn, peer_addr))
      {
         xqc_path_ctx_t *path = xqc_conn_find_path_by_scid(conn, &scid);
-         if(engine->config->delay_challenge) {
+
+         size_t spec_budget = 0;
+         xqc_bool_t allow_speculative = XQC_FALSE;
+         if (engine->config->delay_challenge && path != NULL) {
+             allow_speculative = xqc_engine_migr_allow_speculative(engine, conn, path, peer_addr, recv_time, &spec_budget);
+         }
+
+         if (!allow_speculative && conn->migr_tentative_active) {
+             xqc_engine_migr_cancel_tentative(engine, conn, "fallback");
+         }
+
+         if (allow_speculative) {
+             if (conn->migr_tentative_active
+                 && conn->migr_tentative_path_id != path->path_id)
+             {
+                 xqc_engine_migr_cancel_tentative(engine, conn, "new tentative");
+             }
+
+             if (!conn->migr_tentative_active) {
+                 conn->migr_tentative_active = 1;
+                 engine->migr_tentative_active++;
+             }
+             conn->migr_tentative_path_id = path->path_id;
+             conn->migr_tentative_deadline = recv_time + 3 * xqc_conn_get_max_pto(conn);
+         }
+
+         if(engine->config->delay_challenge && allow_speculative) {
             /* quiet: avoid noisy stdout during NAT rebinding */
              /* set rebinding_addr */
              ret = xqc_memcpy_with_cap(path->rebinding_addr, sizeof(path->rebinding_addr),
@@ -1291,8 +1547,8 @@ void xqc_conn_server_resend_immediately(xqc_connection_t *conn)
                      pto = xqc_max(pto, 20000); /* 20ms minimum */
                      xqc_timer_set(&path->path_send_ctl->path_timer_manager,
                                    XQC_TIMER_NAT_REBINDING, recv_time, 3 * pto);
-                     if(engine->config->immediate_resend){
-                        xqc_conn_server_resend_immediately(conn); /* 立即重发未确认的数据包 */
+                            if(engine->config->immediate_resend){
+                                xqc_conn_server_resend_immediately(conn, spec_budget); /* 立即重发未确认的数据包 */
                      }
                      /* 迁移后发送一次 PING，促使对端快速回 ACK，解除 inflight≈cwnd 的阻塞 */
                     //  if (xqc_path_send_ping_to_probe(path, XQC_PNS_APP_DATA, XQC_PATH_SPECIFIED_BY_PATH_ID) == XQC_OK) {
@@ -1360,6 +1616,8 @@ void xqc_conn_server_resend_immediately(xqc_connection_t *conn)
          XQC_CONN_ERR(conn, TRA_FRAME_ENCODING_ERROR);
          goto after_process;
      }
+
+    xqc_engine_migr_reclaim_tentative(engine, conn, recv_time);
  
      // 每次只会从一个fd上接收一批数据包，所以这里是ok的
      // 需要识别五元组信息是否和前面的path一致

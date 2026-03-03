@@ -1,9 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-ADDR=${ADDR:-192.168.68.125}
-PORT=${PORT:-8443}
-INPUT=${INPUT:-test.mp4}
+ADDR=${ADDR:-192.168.68.125} #set your server IP to bind to
+PORT=${PORT:-8443} #set your server port to bind to
+INPUT=${INPUT:-test.mp4} #set your input video file (can be any file supported by ffmpeg)
 PROFILE=${PROFILE:-call}   # call | game | vr
 LOG=${LOG:-server_live.log}
 DURATION=${DURATION:-35}    # seconds to stream before stopping (optional)
@@ -91,3 +91,4 @@ ffmpeg \
   "${audio[@]}" \
   "${common_mux[@]}" | \
 ( cd "$TARGET_DIR" && ./live_server -a "$ADDR" -p "$PORT" -z -l e -D -2 2>"$LOG_PATH" )
+# Flags: -D enables NBV, -2 enables MAPR. Remove either flag to disable that mechanism. (ps: if disabling NBV, MAPR can do nothing but wait for validation)
